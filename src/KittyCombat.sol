@@ -24,6 +24,7 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus {
         uint256 lockupDuration;
         uint256 infectedBy;  // virus token id
         uint256 healedBy;    // token id of angel cat
+        uint256 bridgeTimestamp;
         uint256 chainIdForHealLockUp;
         uint256 coolDownDeadline;
     }
@@ -57,6 +58,10 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus {
     uint256 public constant INIT_FEE = 0.001 ether;
     uint256 public constant FEE_LINEAR_INC = 0.0001 ether;
     uint256 public currentFee; 
+    uint256 public constant MAX_STRENGTH = 50;
+    uint256 public constant MAX_TRANSMISSION_RATE = 20;
+    uint256 public constant MAX_GROWTH_FACTOR = 10;
+    uint256 public constant MAX_COLOUR = 7;
     mapping(uint256 reqId => address user) public reqIdToUser;
 
     // chainlink vrd parameters
@@ -70,8 +75,8 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus {
 
     // events
     event MintRequested(uint256 requestId, address user);
-
-
+    event CatMinted(uint256 tokenId, address user);
+    event VirusMinted(uint256 tokenId, address user);
 
     constructor(
         address _cattyNip, 
@@ -130,12 +135,38 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus {
         uint256 traitsDeciding = randomWords[1];
         if (catOrVirus < 80) {
             // mint a cat
+            catInfo.push(CatInfo({
+                tokenId: tokenIdToMint,
+                immunity: traitsDeciding % MAX_IMMUNITY,
+                lives: INIT_LIVES,
+                catInfectionInfo: CatInfection({
+                    isInfected: false,
+                    lockupDuration: 0,
+                    infectedBy: 0,
+                    healedBy: 0,
+                    bridgeTimestamp: 0,
+                    chainIdForHealLockUp: 0,
+                    coolDownDeadline: 0
+                }),
+                colour: traitsDeciding % MAX_COLOUR == 0,
+                isAngelCat: false
+            }));
+
+            emit CatMinted(tokenIdToMint, user);
         }
         else {
             // mint a virus
+            virusInfo.push(VirusInfo({
+                tokenId: tokenIdToMint,
+                virusType: VirusType(traitsDeciding % 3),
+                strength: traitsDeciding % MAX_STRENGTH,
+                transmissionRate: traitsDeciding % MAX_TRANSMISSION_RATE,
+                growthFactor: traitsDeciding % MAX_GROWTH_FACTOR,
+                coolDownDeadline: 0
+            }));
 
-
+            emit VirusMinted(tokenIdToMint, user);
         }
-
+        tokenIdToMint++;
     }
 }
