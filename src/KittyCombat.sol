@@ -37,7 +37,7 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus {
         uint256 immunity;
         uint256 lives;
         CatInfection catInfectionInfo;
-        bool colour;
+        uint256 colour;
         bool isAngelCat;
     }
 
@@ -157,7 +157,7 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus {
                     chainIdForHealLockUp: 0,
                     coolDownDeadline: 0
                 }),
-                colour: traitsDeciding % MAX_COLOUR == 0,
+                colour: traitsDeciding % MAX_COLOUR,
                 isAngelCat: false
             }));
 
@@ -208,7 +208,7 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus {
                             ', "bridgeTimestamp": ', cat.catInfectionInfo.bridgeTimestamp.toString(),
                             ', "chainIdForHealLockUp": ', cat.catInfectionInfo.chainIdForHealLockUp.toString(),
                             ', "coolDownDeadline": ', cat.catInfectionInfo.coolDownDeadline.toString(),
-                            ', "colour": ', cat.colour ? 'true' : 'false',
+                            ', "colour": ', cat.colour.toString(),
                             '}'
                         )
                     )
