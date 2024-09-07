@@ -66,6 +66,11 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus, CCIPReceiver {
         bool isCat;
     }
 
+    struct CatHealParams {
+        uint256 lockUpDeadline;
+        address catOwner;
+    }
+
     // variables
     address public immutable i_cattyNip;
     uint256 public constant MAX_COOLDOWN_DEADLINE = 5 days;
@@ -84,6 +89,8 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus, CCIPReceiver {
     mapping(uint256 reqId => address user) public reqIdToUser;
     string[] public VIRUS_TYPE_ARR = ["Whisker Woes", "Furrball Fiasco", "Clawdemic"];
     uint64[] public selectedChainSelectors;
+    mapping(uint256 tokenId => mapping(uint64 sourceChainSelector => CatHealParams)) public healParams;
+
 
     // chainlink vrf parameters
     bytes32 public keyHash;
@@ -247,7 +254,7 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus, CCIPReceiver {
         address _receiver = chainSelectorToDestAddr[_destinationChainSelector];
         bool _isMessageForHeal = true;
 
-        bytes memory _data = abi.encode(_isMessageForHeal, catTokenId, _cat.catInfectionInfo.lockupDuration);
+        bytes memory _data = abi.encode(_isMessageForHeal, catTokenId, _cat.catInfectionInfo.lockupDuration, _ownerOf(catTokenId));
 
         Client.EVM2AnyMessage memory evm2AnyMessage = _buildCCIPMessage(
             _receiver,
@@ -275,16 +282,66 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus, CCIPReceiver {
         );
     }
 
+    function bridgeHealedCatBackToSourceChain(uint256 catTokenIdBasedSourceChain, uint64 sourceChainSelector) external returns (bytes32 messageId) {
+        CatHealParams memory _healParams = healParams[catTokenIdBasedSourceChain][sourceChainSelector];
+        require(block.timestamp > _healParams.lockUpDeadline, "Cat is still under healing lockup");
+        require(msg.sender == _healParams.catOwner, "Only cat owner can bridge healed cat back");
+        delete healParams[catTokenIdBasedSourceChain][sourceChainSelector];
+
+        address _receiver = chainSelectorToDestAddr[sourceChainSelector];
+
+        bool _isMessageForHeal = false;
+        bytes memory _data = abi.encode(_isMessageForHeal, catTokenIdBasedSourceChain);
+
+        Client.EVM2AnyMessage memory evm2AnyMessage = _buildCCIPMessage(
+            _receiver,
+            _data,
+            address(s_linkToken)
+        );
+
+        IRouterClient router = IRouterClient(this.getRouter());
+
+        uint256 fees = router.getFee(sourceChainSelector, evm2AnyMessage);
+
+        s_linkToken.transferFrom(msg.sender, address(this), fees);
+
+        s_linkToken.approve(address(router), fees);
+
+        messageId = router.ccipSend(sourceChainSelector, evm2AnyMessage);
+
+        emit MessageSent(
+            messageId,
+            sourceChainSelector,
+            _receiver,
+            _data,
+            address(s_linkToken),
+            fees
+        );
+    }
+
     function _ccipReceive(
         Client.Any2EVMMessage memory any2EvmMessage
-    )
-        internal
-        override
-        onlyAllowlisted(
-            any2EvmMessage.sourceChainSelector,
-            abi.decode(any2EvmMessage.sender, (address))
-        )
-    {
+    ) internal override onlyAllowlisted(any2EvmMessage.sourceChainSelector, abi.decode(any2EvmMessage.sender, (address))) {
+        bool _isMessageForHeal;
+        bytes memory _data = any2EvmMessage.data;
+        assembly {
+            _isMessageForHeal := mload(add(_data, 0x20))
+        }
+
+        // handling for healing on destination chain
+        if (_isMessageForHeal) {
+            (, uint256 catTokenId, uint256 lockupDuration, address catOwner) = abi.decode(_data, (bool, uint256, uint256, address));
+
+            healParams[catTokenId][any2EvmMessage.sourceChainSelector] = CatHealParams({
+                lockUpDeadline: block.timestamp + lockupDuration,
+                catOwner: catOwner
+            });
+        }
+        // handling for settling healed cat back to source chain
+        else {
+            (, uint256 catTokenIdBasedSourceChain) = abi.decode(_data, (bool, uint256));
+            
+        }
 
         emit MessageReceived(
             any2EvmMessage.messageId,
