@@ -104,6 +104,8 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus, CCIPReceiver {
     mapping(address => bool) public allowlistedSenders;
     IERC20 private s_linkToken;
     mapping(uint64 chainSelector => address destAddr) public chainSelectorToDestAddr;
+    uint256 public gasLimit1 = 300_000;
+    uint256 public gasLimit2 = 400_000;
 
 
     // events
@@ -256,7 +258,8 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus, CCIPReceiver {
         Client.EVM2AnyMessage memory evm2AnyMessage = _buildCCIPMessage(
             _receiver,
             _data,
-            address(s_linkToken)
+            address(s_linkToken),
+            gasLimit1
         );
 
         IRouterClient router = IRouterClient(this.getRouter());
@@ -294,7 +297,8 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus, CCIPReceiver {
         Client.EVM2AnyMessage memory evm2AnyMessage = _buildCCIPMessage(
             _receiver,
             _data,
-            address(s_linkToken)
+            address(s_linkToken),
+            gasLimit2
         );
 
         IRouterClient router = IRouterClient(this.getRouter());
@@ -434,6 +438,14 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus, CCIPReceiver {
         vrfCallbackGaslimit = _vrfCallbackGasLimit;
     }
 
+    function setGaslimit1(uint256 _gasLimit1) external onlyOwner {
+        gasLimit1 = _gasLimit1;
+    }
+
+    function setGaslimit2(uint256 _gasLimit2) external onlyOwner {
+        gasLimit2 = _gasLimit2;
+    }
+
     function _baseURI() internal pure override returns (string memory) {
         return "data:application/json;base64,";
     }
@@ -485,19 +497,17 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus, CCIPReceiver {
     function _buildCCIPMessage(
         address _receiver,
         bytes memory _data,
-        address _feeTokenAddress
+        address _feeTokenAddress,
+        uint256 _gasLimit
     ) private pure returns (Client.EVM2AnyMessage memory) {
-        // Create an EVM2AnyMessage struct in memory with necessary information for sending a cross-chain message
         return
             Client.EVM2AnyMessage({
-                receiver: abi.encode(_receiver), // ABI-encoded receiver address
+                receiver: abi.encode(_receiver),
                 data: _data,
-                tokenAmounts: new Client.EVMTokenAmount[](0), // Empty array aas no tokens are transferred
+                tokenAmounts: new Client.EVMTokenAmount[](0),
                 extraArgs: Client._argsToBytes(
-                    // Additional arguments, setting gas limit
-                    Client.EVMExtraArgsV1({gasLimit: 200_000})
+                    Client.EVMExtraArgsV1({gasLimit: _gasLimit})
                 ),
-                // Set the feeToken to a feeTokenAddress, indicating specific asset will be used for fees
                 feeToken: _feeTokenAddress
             });
     }
