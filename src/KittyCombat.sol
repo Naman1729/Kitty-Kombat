@@ -45,9 +45,9 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus {
         uint256 tokenId;
         VirusType virusType;
         uint256 strength;
-        uint256 transmissionRate;
         uint256 growthFactor;
         uint256 coolDownDeadline;
+        uint256[] infectedTokenIds;
     }
 
     struct IndexRoleInfo {
@@ -66,12 +66,13 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus {
     uint256 public constant INIT_FEE = 0.001 ether;
     uint256 public constant FEE_LINEAR_INC = 0.0001 ether;
     uint256 public currentFee; 
-    uint256 public constant MAX_STRENGTH = 50;
-    uint256 public constant MAX_TRANSMISSION_RATE = 20;
+    uint256 public constant MAX_STRENGTH = 10000;
     uint256 public constant MAX_GROWTH_FACTOR = 10;
     uint256 public constant MAX_COLOUR = 7;
     mapping(uint256 tokenId => IndexRoleInfo indexInfo) public tokenIdToIndexInfo;
     mapping(uint256 reqId => address user) public reqIdToUser;
+    string[] public VIRUS_TYPE_ARR = ["Whisker Woes", "Furrball Fiasco", "Clawdemic"];
+    uint256[] public selectedChainIds;
 
     // chainlink vrd parameters
     bytes32 public keyHash;
@@ -80,7 +81,6 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus {
     uint32 public numWords = 2;
     uint256 public subscriptionId;
 
-    
 
     // events
     event MintRequested(uint256 requestId, address user);
@@ -93,7 +93,8 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus {
         uint32 _callbackGaslimit, 
         uint16 _requestConfirmations,
         uint256 _subscriptionId,
-        bytes32 _keyHash
+        bytes32 _keyHash,
+        uint256[] memory _selectedChainIds
     ) ERC721("KittyCombat", "KC") VRFConsumerBaseV2Plus(_vrfCoordinator) {
         i_cattyNip = _cattyNip;
         currentFee = INIT_FEE;
@@ -101,6 +102,7 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus {
         callbackGaslimit = _callbackGaslimit;
         requestConfirmations = _requestConfirmations;
         subscriptionId = _subscriptionId;
+        selectedChainIds = _selectedChainIds;
     }
 
     function mintKittyOrVirus() external payable {
@@ -135,6 +137,51 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus {
         emit MintRequested(requestId, msg.sender);
     }
 
+    function attack(uint256 attackerVirusTokenId, uint256 catTokenId) external {
+        IndexRoleInfo memory _virusInfo = tokenIdToIndexInfo[attackerVirusTokenId];
+        IndexRoleInfo memory _catInfo =  tokenIdToIndexInfo[catTokenId];
+
+        CatInfo storage _cat = catInfo[_catInfo.index];
+        VirusInfo storage _virus = virusInfo[_virusInfo.index];
+
+        require(_virusInfo.isCat == false && _catInfo.isCat == true && !_cat.isAngelCat, "Invalid token ids");
+        require(_ownerOf(attackerVirusTokenId) == msg.sender, "Only owner can attack");
+        require(block.timestamp > virusInfo[_virusInfo.index].coolDownDeadline, "Virus is on cooldown");
+        require(block.timestamp > catInfo[_catInfo.index].catInfectionInfo.coolDownDeadline && !catInfo[_catInfo.index].catInfectionInfo.isInfected, "Cat is on cooldown");
+
+        _cat.catInfectionInfo.isInfected = true;
+        _cat.catInfectionInfo.infectedBy = attackerVirusTokenId;
+        _virus.infectedTokenIds.push(catTokenId);
+
+        uint256 mod;
+        uint256 inc;
+        if (_virus.virusType == VirusType.Whisker_Woes) {
+            mod = 70;
+            inc = 0;
+        }
+        else if (_virus.virusType == VirusType.Furrball_Fiasco) {
+            mod = 25;
+            inc = 70;
+        }
+        else {
+            mod = 5;
+            inc = 95;
+        }
+
+        uint256 x = _virus.strength % mod;
+        uint256 virusImm = x + inc;
+
+        if (_cat.immunity > virusImm) {
+            revert("Cat immune to virus");
+        }
+
+        uint256 immDiff = (virusImm - _cat.immunity);
+    
+
+        _cat.catInfectionInfo.lockupDuration = immDiff * 3 hours;
+        _cat.catInfectionInfo.chainIdForHealLockUp = selectedChainIds[immDiff % selectedChainIds.length];
+    }
+
     function fulfillRandomWords(uint256 requestId, uint256[] calldata randomWords) internal override {
         address user = reqIdToUser[requestId];
 
@@ -155,7 +202,7 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus {
                     healedBy: 0,
                     bridgeTimestamp: 0,
                     chainIdForHealLockUp: 0,
-                    coolDownDeadline: 0
+                    coolDownDeadline: block.timestamp + MAX_COOLDOWN_DEADLINE
                 }),
                 colour: traitsDeciding % MAX_COLOUR,
                 isAngelCat: false
@@ -174,9 +221,9 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus {
                 tokenId: tokenIdToMint,
                 virusType: VirusType(traitsDeciding % 3),
                 strength: traitsDeciding % MAX_STRENGTH,
-                transmissionRate: traitsDeciding % MAX_TRANSMISSION_RATE,
                 growthFactor: traitsDeciding % MAX_GROWTH_FACTOR,
-                coolDownDeadline: 0
+                coolDownDeadline: block.timestamp + MAX_COOLDOWN_DEADLINE - 3 days,
+                infectedTokenIds: new uint256[](0)
             }));
 
             tokenIdToIndexInfo[tokenIdToMint] = IndexRoleInfo({
@@ -189,27 +236,29 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus {
         tokenIdToMint++;
     }
 
+    function _baseURI() internal pure override returns (string memory) {
+        return "data:application/json;base64,";
+    }
+
     function tokenURI(uint256 tokenId) public view override returns (string memory) {
+        if (tokenId >= tokenIdToMint) {
+            return "";
+        }
+
         if(tokenIdToIndexInfo[tokenId].isCat) {
             CatInfo memory cat = catInfo[tokenIdToIndexInfo[tokenId].index];
             return string(abi.encodePacked(
-                "data:application/json;base64,",
+                _baseURI(),
                 Base64.encode(
                     bytes(
                         abi.encodePacked(
-                            '{"name": "Cat',
-                            ',"tokenId": ', tokenId.toString(), 
-                            ', "immunity": ', cat.immunity.toString(),
-                            ', "lives": ', cat.lives.toString(),
-                            ', "isInfected": ', cat.catInfectionInfo.isInfected ? 'true' : 'false',
-                            ', "lockupDuration": ', cat.catInfectionInfo.lockupDuration.toString(),
-                            ', "infectedBy": ', cat.catInfectionInfo.infectedBy.toString(),
-                            ', "healedBy": ', cat.catInfectionInfo.healedBy.toString(),
-                            ', "bridgeTimestamp": ', cat.catInfectionInfo.bridgeTimestamp.toString(),
-                            ', "chainIdForHealLockUp": ', cat.catInfectionInfo.chainIdForHealLockUp.toString(),
-                            ', "coolDownDeadline": ', cat.catInfectionInfo.coolDownDeadline.toString(),
-                            ', "colour": ', cat.colour.toString(),
-                            '}'
+                            '{"name": "', cat.isAngelCat ? "Angel Cat" : "Cat", 
+                            '", "tokenId": "', tokenId.toString(), 
+                            '", "immunity": "', cat.immunity.toString(),
+                            '", "lives": "', cat.lives.toString(),
+                            '", "isInfected": "', cat.catInfectionInfo.isInfected ? 'true' : 'false',
+                            '", "colour": "', cat.colour.toString(),
+                            '"}'
                         )
                     )
                 )
@@ -218,18 +267,16 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus {
         else {
             VirusInfo memory virus = virusInfo[tokenIdToIndexInfo[tokenId].index];
             return string(abi.encodePacked(
-                "data:application/json;base64,",
+                _baseURI(),
                 Base64.encode(
                     bytes(
                         abi.encodePacked(
                             '{"name": "Virus',
-                            ',"tokenId": ', tokenId.toString(),
-                            ', "virusType": ', uint256(virus.virusType).toString(),
-                            ', "strength": ', virus.strength.toString(),
-                            ', "transmissionRate": ', virus.transmissionRate.toString(),
-                            ', "growthFactor": ', virus.growthFactor.toString(),
-                            ', "coolDownDeadline": ', virus.coolDownDeadline.toString(),
-                            '}'
+                            '", "tokenId": "', tokenId.toString(),
+                            '", "virusType": "', VIRUS_TYPE_ARR[uint256(virus.virusType)],
+                            '", "strength": "', virus.strength.toString(),
+                            '", "growthFactor": "', virus.growthFactor.toString(),
+                            '"}'
                         )
                     )
                 )
