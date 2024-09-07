@@ -94,7 +94,7 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus, CCIPReceiver {
 
     // chainlink vrf parameters
     bytes32 public keyHash;
-    uint32 public callbackGaslimit;
+    uint32 public vrfCallbackGaslimit;
     uint16 public requestConfirmations;
     uint32 public numWords = 2;
     uint256 public subscriptionId;
@@ -122,8 +122,7 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus, CCIPReceiver {
     event MessageReceived(
         bytes32 indexed messageId, 
         uint64 indexed sourceChainSelector,
-        address sender,
-        string text
+        address sender
     );
 
     modifier onlyAllowlisted(uint64 _sourceChainSelector, address _sender) {
@@ -136,27 +135,27 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus, CCIPReceiver {
     constructor(
         address _cattyNip, 
         address _vrfCoordinator, 
-        uint32 _callbackGaslimit, 
+        uint32 _vrfCallbackGaslimit, 
         uint16 _requestConfirmations,
         uint256 _subscriptionId,
         bytes32 _keyHash,
-        uint64[] memory _selectedChainSelectors,
-        address[] memory _destinationAddresses,
         address _ccipRouter,
         address _link
     ) ERC721("KittyCombat", "KC") VRFConsumerBaseV2Plus(_vrfCoordinator) CCIPReceiver(_ccipRouter) {
-        require(_selectedChainSelectors.length == _destinationAddresses.length, "Invalid chain selectors and destination addresses");
-
         i_cattyNip = _cattyNip;
         currentFee = INIT_FEE;
         keyHash = _keyHash;
-        callbackGaslimit = _callbackGaslimit;
+        vrfCallbackGaslimit = _vrfCallbackGaslimit;
         requestConfirmations = _requestConfirmations;
         subscriptionId = _subscriptionId;
-        selectedChainSelectors = _selectedChainSelectors;
         s_linkToken = IERC20(_link);
+    }
+
+    function setDestAddr(uint64[] memory _selectedChainSelectors, address[] memory _destinationAddresses) external onlyOwner {
+        require(_selectedChainSelectors.length == _destinationAddresses.length, "Invalid input");
 
         for (uint256 i = 0; i < _selectedChainSelectors.length; i++) {
+            selectedChainSelectors.push(_selectedChainSelectors[i]);
             chainSelectorToDestAddr[_selectedChainSelectors[i]] = _destinationAddresses[i];
         }
     }
@@ -178,7 +177,7 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus, CCIPReceiver {
                 keyHash: keyHash,
                 subId: subscriptionId,
                 requestConfirmations: requestConfirmations,
-                callbackGasLimit: callbackGaslimit,
+                callbackGasLimit: vrfCallbackGaslimit,
                 numWords: numWords,
                 extraArgs: VRFV2PlusClient._argsToBytes(
                     VRFV2PlusClient.ExtraArgsV1({
@@ -208,6 +207,7 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus, CCIPReceiver {
         _cat.catInfectionInfo.isInfected = true;
         _cat.catInfectionInfo.infectedBy = attackerVirusTokenId;
         _virus.infectedTokenIds.push(catTokenId);
+        _virus.coolDownDeadline = block.timestamp + 3 days;
 
         uint256 mod;
         uint256 inc;
@@ -247,9 +247,6 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus, CCIPReceiver {
 
         _cat.catInfectionInfo.bridgeTimestamp = block.timestamp;
 
-        // this should be set up when nft is bridged back to the original chain
-        // _cat.catInfectionInfo.coolDownDeadline = block.timestamp + _cat.catInfectionInfo.lockupDuration + MAX_COOLDOWN_DEADLINE;
-
         uint64 _destinationChainSelector = _cat.catInfectionInfo.chainSelectorForHealLockUp;
         address _receiver = chainSelectorToDestAddr[_destinationChainSelector];
         bool _isMessageForHeal = true;
@@ -286,12 +283,13 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus, CCIPReceiver {
         CatHealParams memory _healParams = healParams[catTokenIdBasedSourceChain][sourceChainSelector];
         require(block.timestamp > _healParams.lockUpDeadline, "Cat is still under healing lockup");
         require(msg.sender == _healParams.catOwner, "Only cat owner can bridge healed cat back");
-        delete healParams[catTokenIdBasedSourceChain][sourceChainSelector];
 
         address _receiver = chainSelectorToDestAddr[sourceChainSelector];
 
         bool _isMessageForHeal = false;
-        bytes memory _data = abi.encode(_isMessageForHeal, catTokenIdBasedSourceChain);
+        bytes memory _data = abi.encode(_isMessageForHeal, catTokenIdBasedSourceChain, _healParams.lockUpDeadline);
+
+        delete healParams[catTokenIdBasedSourceChain][sourceChainSelector];
 
         Client.EVM2AnyMessage memory evm2AnyMessage = _buildCCIPMessage(
             _receiver,
@@ -339,15 +337,26 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus, CCIPReceiver {
         }
         // handling for settling healed cat back to source chain
         else {
-            (, uint256 catTokenIdBasedSourceChain) = abi.decode(_data, (bool, uint256));
-            
+            (, uint256 catTokenIdBasedSourceChain, uint256 lockUpDeadline) = abi.decode(_data, (bool, uint256, uint256));
+            CatInfo storage _cat = catInfo[tokenIdToIndexInfo[catTokenIdBasedSourceChain].index];
+
+            _cat.lives -= 1;
+            _cat.catInfectionInfo.isInfected = false;
+            _cat.catInfectionInfo.lockupDuration = 0;
+            _cat.catInfectionInfo.infectedBy = 0;
+            _cat.catInfectionInfo.bridgeTimestamp = 0;
+            _cat.catInfectionInfo.chainSelectorForHealLockUp = 0;
+            _cat.catInfectionInfo.coolDownDeadline = lockUpDeadline + MAX_COOLDOWN_DEADLINE;
+
+            if (_cat.lives == 0) {
+                _cat.isAngelCat = true;
+            }
         }
 
         emit MessageReceived(
             any2EvmMessage.messageId,
             any2EvmMessage.sourceChainSelector,
-            abi.decode(any2EvmMessage.sender, (address)),
-            abi.decode(any2EvmMessage.data, (string))
+            abi.decode(any2EvmMessage.sender, (address))
         );
     }
 
@@ -391,7 +400,7 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus, CCIPReceiver {
                 virusType: VirusType(traitsDeciding % 3),
                 strength: traitsDeciding % MAX_STRENGTH,
                 growthFactor: traitsDeciding % MAX_GROWTH_FACTOR,
-                coolDownDeadline: block.timestamp + MAX_COOLDOWN_DEADLINE - 3 days,
+                coolDownDeadline: block.timestamp + MAX_COOLDOWN_DEADLINE - 2 days,
                 infectedTokenIds: new uint256[](0)
             }));
 
@@ -419,6 +428,10 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus, CCIPReceiver {
     function withdrawFees() external onlyOwner {
         (bool success, ) = payable(msg.sender).call{value: address(this).balance}("");
         require(success);
+    }
+
+    function setVrfCallbackGasLimit(uint32 _vrfCallbackGasLimit) external onlyOwner {
+        vrfCallbackGaslimit = _vrfCallbackGasLimit;
     }
 
     function _baseURI() internal pure override returns (string memory) {
