@@ -72,7 +72,6 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus, CCIPReceiver {
     }
 
     // variables
-    address public immutable i_cattyNip;
     uint256 public constant MAX_COOLDOWN_DEADLINE = 5 days;
     uint256 public constant MAX_IMMUNITY = 100;
     uint256 public constant INIT_LIVES = 9;
@@ -135,7 +134,6 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus, CCIPReceiver {
     }
 
     constructor(
-        address _cattyNip, 
         address _vrfCoordinator, 
         uint32 _vrfCallbackGaslimit, 
         uint16 _requestConfirmations,
@@ -144,7 +142,6 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus, CCIPReceiver {
         address _ccipRouter,
         address _link
     ) ERC721("KittyCombat", "KC") VRFConsumerBaseV2Plus(_vrfCoordinator) CCIPReceiver(_ccipRouter) {
-        i_cattyNip = _cattyNip;
         currentFee = INIT_FEE;
         keyHash = _keyHash;
         vrfCallbackGaslimit = _vrfCallbackGaslimit;
