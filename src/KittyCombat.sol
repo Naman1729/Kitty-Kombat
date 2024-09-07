@@ -233,10 +233,21 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus, CCIPReceiver {
 
     function bridgeCatForHeal(uint256 catTokenId) external returns (bytes32 messageId) {
         // check for token id, for ownership, and cat is actualled infected
+        CatInfo storage _cat = catInfo[tokenIdToIndexInfo[catTokenId].index];
+        require(_cat.catInfectionInfo.isInfected, "Cat is not infected");
+        require(_ownerOf(catTokenId) == msg.sender, "Only owner can bridge");
+        require(_cat.catInfectionInfo.bridgeTimestamp == 0, "Cat already bridged");
 
-        uint64 _destinationChainSelector = catInfo[tokenIdToIndexInfo[catTokenId].index].catInfectionInfo.chainSelectorForHealLockUp;
+        _cat.catInfectionInfo.bridgeTimestamp = block.timestamp;
+
+        // this should be set up when nft is bridged back to the original chain
+        // _cat.catInfectionInfo.coolDownDeadline = block.timestamp + _cat.catInfectionInfo.lockupDuration + MAX_COOLDOWN_DEADLINE;
+
+        uint64 _destinationChainSelector = _cat.catInfectionInfo.chainSelectorForHealLockUp;
         address _receiver = chainSelectorToDestAddr[_destinationChainSelector];
-        bytes memory _data;
+        bool _isMessageForHeal = true;
+
+        bytes memory _data = abi.encode(_isMessageForHeal, catTokenId, _cat.catInfectionInfo.lockupDuration);
 
         Client.EVM2AnyMessage memory evm2AnyMessage = _buildCCIPMessage(
             _receiver,
@@ -244,22 +255,16 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus, CCIPReceiver {
             address(s_linkToken)
         );
 
-        // Initialize a router client instance to interact with cross-chain router
         IRouterClient router = IRouterClient(this.getRouter());
 
-        // Get the fee required to send the CCIP message
         uint256 fees = router.getFee(_destinationChainSelector, evm2AnyMessage);
 
-        if (fees > s_linkToken.balanceOf(address(this)))
-            revert KittyCombat__NotEnoughBalance(s_linkToken.balanceOf(address(this)), fees);
+        s_linkToken.transferFrom(msg.sender, address(this), fees);
 
-        // approve the Router to transfer LINK tokens on contract's behalf. It will spend the fees in LINK
         s_linkToken.approve(address(router), fees);
 
-        // Send the CCIP message through the router and store the returned CCIP message ID
         messageId = router.ccipSend(_destinationChainSelector, evm2AnyMessage);
 
-        // Emit an event with message details
         emit MessageSent(
             messageId,
             _destinationChainSelector,
@@ -278,13 +283,13 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus, CCIPReceiver {
         onlyAllowlisted(
             any2EvmMessage.sourceChainSelector,
             abi.decode(any2EvmMessage.sender, (address))
-        ) // Make sure source chain and sender are allowlisted
+        )
     {
 
         emit MessageReceived(
             any2EvmMessage.messageId,
-            any2EvmMessage.sourceChainSelector, // fetch the source chain identifier (aka selector)
-            abi.decode(any2EvmMessage.sender, (address)), // abi-decoding of the sender address,
+            any2EvmMessage.sourceChainSelector,
+            abi.decode(any2EvmMessage.sender, (address)),
             abi.decode(any2EvmMessage.data, (string))
         );
     }
@@ -352,6 +357,11 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus, CCIPReceiver {
 
     function allowlistSender(address _sender, bool allowed) external onlyOwner {
         allowlistedSenders[_sender] = allowed;
+    }
+
+    function withdrawFees() external onlyOwner {
+        (bool success, ) = payable(msg.sender).call{value: address(this).balance}("");
+        require(success);
     }
 
     function _baseURI() internal pure override returns (string memory) {
