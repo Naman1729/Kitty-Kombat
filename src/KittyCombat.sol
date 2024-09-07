@@ -8,11 +8,22 @@ import { VRFConsumerBaseV2Plus, IVRFCoordinatorV2Plus } from "@chainlink/contrac
 import { VRFV2PlusClient } from "@chainlink/contracts/src/v0.8/vrf/dev/libraries/VRFV2PlusClient.sol";
 import { Base64 } from "@openzeppelin/contracts/utils/Base64.sol";
 import { Strings } from "@openzeppelin/contracts/utils/Strings.sol";
+import {IRouterClient} from "@chainlink/contracts-ccip/src/v0.8/ccip/interfaces/IRouterClient.sol";
+import {OwnerIsCreator} from "@chainlink/contracts-ccip/src/v0.8/shared/access/OwnerIsCreator.sol";
+import {Client} from "@chainlink/contracts-ccip/src/v0.8/ccip/libraries/Client.sol";
+import {CCIPReceiver} from "@chainlink/contracts-ccip/src/v0.8/ccip/applications/CCIPReceiver.sol";
+import {IERC20} from "@chainlink/contracts-ccip/src/v0.8/vendor/openzeppelin-solidity/v4.8.3/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@chainlink/contracts-ccip/src/v0.8/vendor/openzeppelin-solidity/v4.8.3/contracts/token/ERC20/utils/SafeERC20.sol";
 
-contract KittyCombat is ERC721, VRFConsumerBaseV2Plus {
+contract KittyCombat is ERC721, VRFConsumerBaseV2Plus, CCIPReceiver {
     using Strings for uint256;
+    using SafeERC20 for IERC20;
+
     // errors
     error KittyCombat__IncorrectFeesSent();
+    error KittyCombat__NotEnoughBalance(uint256 currentBalance, uint256 calculatedFees); 
+    error KittyCombat__SourceChainNotAllowlisted(uint64 sourceChainSelector); 
+    error KittyCombat__SenderNotAllowlisted(address sender);
 
     // enums
     enum VirusType {
@@ -28,7 +39,7 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus {
         uint256 infectedBy;  // virus token id
         uint256 healedBy;    // token id of angel cat
         uint256 bridgeTimestamp;
-        uint256 chainIdForHealLockUp;
+        uint64 chainSelectorForHealLockUp;
         uint256 coolDownDeadline;
     }
 
@@ -72,20 +83,48 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus {
     mapping(uint256 tokenId => IndexRoleInfo indexInfo) public tokenIdToIndexInfo;
     mapping(uint256 reqId => address user) public reqIdToUser;
     string[] public VIRUS_TYPE_ARR = ["Whisker Woes", "Furrball Fiasco", "Clawdemic"];
-    uint256[] public selectedChainIds;
+    uint64[] public selectedChainSelectors;
 
-    // chainlink vrd parameters
+    // chainlink vrf parameters
     bytes32 public keyHash;
     uint32 public callbackGaslimit;
     uint16 public requestConfirmations;
     uint32 public numWords = 2;
     uint256 public subscriptionId;
 
+    // chainlink ccip parameters
+    mapping(uint64 => bool) public allowlistedSourceChains;
+    mapping(address => bool) public allowlistedSenders;
+    IERC20 private s_linkToken;
+    mapping(uint64 chainSelector => address destAddr) public chainSelectorToDestAddr;
+
 
     // events
     event MintRequested(uint256 requestId, address user);
     event CatMinted(uint256 tokenId, address user);
     event VirusMinted(uint256 tokenId, address user);
+    event MessageSent(
+        bytes32 indexed messageId,
+        uint64 indexed destinationChainSelector, 
+        address receiver,
+        bytes data,
+        address feeToken,
+        uint256 fees
+    );
+
+    event MessageReceived(
+        bytes32 indexed messageId, 
+        uint64 indexed sourceChainSelector,
+        address sender,
+        string text
+    );
+
+    modifier onlyAllowlisted(uint64 _sourceChainSelector, address _sender) {
+        if (!allowlistedSourceChains[_sourceChainSelector])
+            revert KittyCombat__SourceChainNotAllowlisted(_sourceChainSelector);
+        if (!allowlistedSenders[_sender]) revert KittyCombat__SenderNotAllowlisted(_sender);
+        _;
+    }
 
     constructor(
         address _cattyNip, 
@@ -94,15 +133,25 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus {
         uint16 _requestConfirmations,
         uint256 _subscriptionId,
         bytes32 _keyHash,
-        uint256[] memory _selectedChainIds
-    ) ERC721("KittyCombat", "KC") VRFConsumerBaseV2Plus(_vrfCoordinator) {
+        uint64[] memory _selectedChainSelectors,
+        address[] memory _destinationAddresses,
+        address _ccipRouter,
+        address _link
+    ) ERC721("KittyCombat", "KC") VRFConsumerBaseV2Plus(_vrfCoordinator) CCIPReceiver(_ccipRouter) {
+        require(_selectedChainSelectors.length == _destinationAddresses.length, "Invalid chain selectors and destination addresses");
+
         i_cattyNip = _cattyNip;
         currentFee = INIT_FEE;
         keyHash = _keyHash;
         callbackGaslimit = _callbackGaslimit;
         requestConfirmations = _requestConfirmations;
         subscriptionId = _subscriptionId;
-        selectedChainIds = _selectedChainIds;
+        selectedChainSelectors = _selectedChainSelectors;
+        s_linkToken = IERC20(_link);
+
+        for (uint256 i = 0; i < _selectedChainSelectors.length; i++) {
+            chainSelectorToDestAddr[_selectedChainSelectors[i]] = _destinationAddresses[i];
+        }
     }
 
     function mintKittyOrVirus() external payable {
@@ -179,7 +228,65 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus {
     
 
         _cat.catInfectionInfo.lockupDuration = immDiff * 3 hours;
-        _cat.catInfectionInfo.chainIdForHealLockUp = selectedChainIds[immDiff % selectedChainIds.length];
+        _cat.catInfectionInfo.chainSelectorForHealLockUp = selectedChainSelectors[immDiff % selectedChainSelectors.length];
+    }
+
+    function bridgeCatForHeal(uint256 catTokenId) external returns (bytes32 messageId) {
+        // check for token id, for ownership, and cat is actualled infected
+
+        uint64 _destinationChainSelector = catInfo[tokenIdToIndexInfo[catTokenId].index].catInfectionInfo.chainSelectorForHealLockUp;
+        address _receiver = chainSelectorToDestAddr[_destinationChainSelector];
+        bytes memory _data;
+
+        Client.EVM2AnyMessage memory evm2AnyMessage = _buildCCIPMessage(
+            _receiver,
+            _data,
+            address(s_linkToken)
+        );
+
+        // Initialize a router client instance to interact with cross-chain router
+        IRouterClient router = IRouterClient(this.getRouter());
+
+        // Get the fee required to send the CCIP message
+        uint256 fees = router.getFee(_destinationChainSelector, evm2AnyMessage);
+
+        if (fees > s_linkToken.balanceOf(address(this)))
+            revert KittyCombat__NotEnoughBalance(s_linkToken.balanceOf(address(this)), fees);
+
+        // approve the Router to transfer LINK tokens on contract's behalf. It will spend the fees in LINK
+        s_linkToken.approve(address(router), fees);
+
+        // Send the CCIP message through the router and store the returned CCIP message ID
+        messageId = router.ccipSend(_destinationChainSelector, evm2AnyMessage);
+
+        // Emit an event with message details
+        emit MessageSent(
+            messageId,
+            _destinationChainSelector,
+            _receiver,
+            _data,
+            address(s_linkToken),
+            fees
+        );
+    }
+
+    function _ccipReceive(
+        Client.Any2EVMMessage memory any2EvmMessage
+    )
+        internal
+        override
+        onlyAllowlisted(
+            any2EvmMessage.sourceChainSelector,
+            abi.decode(any2EvmMessage.sender, (address))
+        ) // Make sure source chain and sender are allowlisted
+    {
+
+        emit MessageReceived(
+            any2EvmMessage.messageId,
+            any2EvmMessage.sourceChainSelector, // fetch the source chain identifier (aka selector)
+            abi.decode(any2EvmMessage.sender, (address)), // abi-decoding of the sender address,
+            abi.decode(any2EvmMessage.data, (string))
+        );
     }
 
     function fulfillRandomWords(uint256 requestId, uint256[] calldata randomWords) internal override {
@@ -201,7 +308,7 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus {
                     infectedBy: 0,
                     healedBy: 0,
                     bridgeTimestamp: 0,
-                    chainIdForHealLockUp: 0,
+                    chainSelectorForHealLockUp: 0,
                     coolDownDeadline: block.timestamp + MAX_COOLDOWN_DEADLINE
                 }),
                 colour: traitsDeciding % MAX_COLOUR,
@@ -234,6 +341,17 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus {
             emit VirusMinted(tokenIdToMint, user);
         }
         tokenIdToMint++;
+    }
+
+    function allowlistSourceChain(
+        uint64 _sourceChainSelector,
+        bool allowed
+    ) external onlyOwner {
+        allowlistedSourceChains[_sourceChainSelector] = allowed;
+    }
+
+    function allowlistSender(address _sender, bool allowed) external onlyOwner {
+        allowlistedSenders[_sender] = allowed;
     }
 
     function _baseURI() internal pure override returns (string memory) {
@@ -282,5 +400,29 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus {
                 )
             ));
         }
+    }
+
+    function _buildCCIPMessage(
+        address _receiver,
+        bytes memory _data,
+        address _feeTokenAddress
+    ) private pure returns (Client.EVM2AnyMessage memory) {
+        // Create an EVM2AnyMessage struct in memory with necessary information for sending a cross-chain message
+        return
+            Client.EVM2AnyMessage({
+                receiver: abi.encode(_receiver), // ABI-encoded receiver address
+                data: _data,
+                tokenAmounts: new Client.EVMTokenAmount[](0), // Empty array aas no tokens are transferred
+                extraArgs: Client._argsToBytes(
+                    // Additional arguments, setting gas limit
+                    Client.EVMExtraArgsV1({gasLimit: 200_000})
+                ),
+                // Set the feeToken to a feeTokenAddress, indicating specific asset will be used for fees
+                feeToken: _feeTokenAddress
+            });
+    }
+
+    function supportsInterface(bytes4 interfaceId) public pure override(ERC721, CCIPReceiver) returns (bool) {
+        return super.supportsInterface(interfaceId);
     }
 }
