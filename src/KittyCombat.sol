@@ -75,6 +75,8 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus, CCIPReceiver {
     uint256 public constant MAX_COOLDOWN_DEADLINE = 5 days;
     uint256 public constant MAX_IMMUNITY = 100;
     uint256 public constant INIT_LIVES = 9;
+    uint256 public cooldownDeadline;
+    uint256 public perLockupTime;
     uint256 public tokenIdToMint = 1;
     CatInfo[] public catInfo;
     VirusInfo[] public virusInfo;
@@ -159,6 +161,41 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus, CCIPReceiver {
         }
     }
 
+    function allowlistSourceChain(
+        uint64 _sourceChainSelector,
+        bool allowed
+    ) external onlyOwner {
+        allowlistedSourceChains[_sourceChainSelector] = allowed;
+    }
+
+    function allowlistSender(address _sender, bool allowed) external onlyOwner {
+        allowlistedSenders[_sender] = allowed;
+    }
+
+    function setVrfCallbackGasLimit(uint32 _vrfCallbackGasLimit) external onlyOwner {
+        vrfCallbackGaslimit = _vrfCallbackGasLimit;
+    }
+
+    function setGaslimit1(uint256 _gasLimit1) external onlyOwner {
+        gasLimit1 = _gasLimit1;
+    }
+
+    function setGaslimit2(uint256 _gasLimit2) external onlyOwner {
+        gasLimit2 = _gasLimit2;
+    }
+
+    function setCooldownDeadline(uint256 _cooldownDeadline) external onlyOwner {
+        if (_cooldownDeadline > MAX_COOLDOWN_DEADLINE) {
+            revert("Invalid cooldown deadline");
+        }
+
+        cooldownDeadline = _cooldownDeadline;
+    }
+
+    function setPerLockupTime(uint256 _perLockupTime) external onlyOwner {
+        perLockupTime = _perLockupTime;
+    }
+
     function mintKittyOrVirus() external payable {
         uint256 _fee = currentFee;
 
@@ -206,7 +243,7 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus, CCIPReceiver {
         _cat.catInfectionInfo.isInfected = true;
         _cat.catInfectionInfo.infectedBy = attackerVirusTokenId;
         _virus.infectedTokenIds.push(catTokenId);
-        _virus.coolDownDeadline = block.timestamp + 3 days;
+        _virus.coolDownDeadline = block.timestamp + cooldownDeadline;
 
         uint256 mod;
         uint256 inc;
@@ -233,7 +270,7 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus, CCIPReceiver {
         uint256 immDiff = (virusImm - _cat.immunity);
     
 
-        _cat.catInfectionInfo.lockupDuration = immDiff * 3 hours;
+        _cat.catInfectionInfo.lockupDuration = immDiff * perLockupTime;
         _cat.catInfectionInfo.chainSelectorForHealLockUp = selectedChainSelectors[immDiff % selectedChainSelectors.length];
     }
 
@@ -347,7 +384,7 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus, CCIPReceiver {
             _cat.catInfectionInfo.infectedBy = 0;
             _cat.catInfectionInfo.bridgeTimestamp = 0;
             _cat.catInfectionInfo.chainSelectorForHealLockUp = 0;
-            _cat.catInfectionInfo.coolDownDeadline = lockUpDeadline + MAX_COOLDOWN_DEADLINE;
+            _cat.catInfectionInfo.coolDownDeadline = lockUpDeadline + cooldownDeadline;
 
             if (_cat.lives == 0) {
                 _cat.isAngelCat = true;
@@ -381,7 +418,7 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus, CCIPReceiver {
                     healedBy: 0,
                     bridgeTimestamp: 0,
                     chainSelectorForHealLockUp: 0,
-                    coolDownDeadline: block.timestamp + MAX_COOLDOWN_DEADLINE
+                    coolDownDeadline: block.timestamp + cooldownDeadline
                 }),
                 colour: traitsDeciding % MAX_COLOUR,
                 isAngelCat: false
@@ -401,7 +438,7 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus, CCIPReceiver {
                 virusType: VirusType(traitsDeciding % 3),
                 strength: traitsDeciding % MAX_STRENGTH,
                 growthFactor: traitsDeciding % MAX_GROWTH_FACTOR,
-                coolDownDeadline: block.timestamp + MAX_COOLDOWN_DEADLINE - 2 days,
+                coolDownDeadline: block.timestamp + cooldownDeadline,
                 infectedTokenIds: new uint256[](0)
             }));
 
@@ -415,32 +452,9 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus, CCIPReceiver {
         tokenIdToMint++;
     }
 
-    function allowlistSourceChain(
-        uint64 _sourceChainSelector,
-        bool allowed
-    ) external onlyOwner {
-        allowlistedSourceChains[_sourceChainSelector] = allowed;
-    }
-
-    function allowlistSender(address _sender, bool allowed) external onlyOwner {
-        allowlistedSenders[_sender] = allowed;
-    }
-
     function withdrawFees() external onlyOwner {
         (bool success, ) = payable(msg.sender).call{value: address(this).balance}("");
         require(success);
-    }
-
-    function setVrfCallbackGasLimit(uint32 _vrfCallbackGasLimit) external onlyOwner {
-        vrfCallbackGaslimit = _vrfCallbackGasLimit;
-    }
-
-    function setGaslimit1(uint256 _gasLimit1) external onlyOwner {
-        gasLimit1 = _gasLimit1;
-    }
-
-    function setGaslimit2(uint256 _gasLimit2) external onlyOwner {
-        gasLimit2 = _gasLimit2;
     }
 
     function _baseURI() internal pure override returns (string memory) {
