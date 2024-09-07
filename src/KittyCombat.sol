@@ -6,8 +6,11 @@ import { ERC721 } from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
 import { VRFConsumerBaseV2Plus, IVRFCoordinatorV2Plus } from "@chainlink/contracts/src/v0.8/vrf/dev/VRFConsumerBaseV2Plus.sol";
 import { VRFV2PlusClient } from "@chainlink/contracts/src/v0.8/vrf/dev/libraries/VRFV2PlusClient.sol";
+import { Base64 } from "@openzeppelin/contracts/utils/Base64.sol";
+import { Strings } from "@openzeppelin/contracts/utils/Strings.sol";
 
 contract KittyCombat is ERC721, VRFConsumerBaseV2Plus {
+    using Strings for uint256;
     // errors
     error KittyCombat__IncorrectFeesSent();
 
@@ -47,6 +50,11 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus {
         uint256 coolDownDeadline;
     }
 
+    struct IndexRoleInfo {
+        uint256 index;
+        bool isCat;
+    }
+
     // variables
     address public immutable i_cattyNip;
     uint256 public constant MAX_COOLDOWN_DEADLINE = 5 days;
@@ -62,6 +70,7 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus {
     uint256 public constant MAX_TRANSMISSION_RATE = 20;
     uint256 public constant MAX_GROWTH_FACTOR = 10;
     uint256 public constant MAX_COLOUR = 7;
+    mapping(uint256 tokenId => IndexRoleInfo indexInfo) public tokenIdToIndexInfo;
     mapping(uint256 reqId => address user) public reqIdToUser;
 
     // chainlink vrd parameters
@@ -152,6 +161,11 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus {
                 isAngelCat: false
             }));
 
+            tokenIdToIndexInfo[tokenIdToMint] = IndexRoleInfo({
+                index: catInfo.length - 1,
+                isCat: true
+            });
+
             emit CatMinted(tokenIdToMint, user);
         }
         else {
@@ -165,8 +179,61 @@ contract KittyCombat is ERC721, VRFConsumerBaseV2Plus {
                 coolDownDeadline: 0
             }));
 
+            tokenIdToIndexInfo[tokenIdToMint] = IndexRoleInfo({
+                index: virusInfo.length - 1,
+                isCat: false
+            });
+
             emit VirusMinted(tokenIdToMint, user);
         }
         tokenIdToMint++;
+    }
+
+    function tokenURI(uint256 tokenId) public view override returns (string memory) {
+        if(tokenIdToIndexInfo[tokenId].isCat) {
+            CatInfo memory cat = catInfo[tokenIdToIndexInfo[tokenId].index];
+            return string(abi.encodePacked(
+                "data:application/json;base64,",
+                Base64.encode(
+                    bytes(
+                        abi.encodePacked(
+                            '{"name": "Cat',
+                            ',"tokenId": ', tokenId.toString(), 
+                            ', "immunity": ', cat.immunity.toString(),
+                            ', "lives": ', cat.lives.toString(),
+                            ', "isInfected": ', cat.catInfectionInfo.isInfected ? 'true' : 'false',
+                            ', "lockupDuration": ', cat.catInfectionInfo.lockupDuration.toString(),
+                            ', "infectedBy": ', cat.catInfectionInfo.infectedBy.toString(),
+                            ', "healedBy": ', cat.catInfectionInfo.healedBy.toString(),
+                            ', "bridgeTimestamp": ', cat.catInfectionInfo.bridgeTimestamp.toString(),
+                            ', "chainIdForHealLockUp": ', cat.catInfectionInfo.chainIdForHealLockUp.toString(),
+                            ', "coolDownDeadline": ', cat.catInfectionInfo.coolDownDeadline.toString(),
+                            ', "colour": ', cat.colour ? 'true' : 'false',
+                            '}'
+                        )
+                    )
+                )
+            ));
+        }
+        else {
+            VirusInfo memory virus = virusInfo[tokenIdToIndexInfo[tokenId].index];
+            return string(abi.encodePacked(
+                "data:application/json;base64,",
+                Base64.encode(
+                    bytes(
+                        abi.encodePacked(
+                            '{"name": "Virus',
+                            ',"tokenId": ', tokenId.toString(),
+                            ', "virusType": ', uint256(virus.virusType).toString(),
+                            ', "strength": ', virus.strength.toString(),
+                            ', "transmissionRate": ', virus.transmissionRate.toString(),
+                            ', "growthFactor": ', virus.growthFactor.toString(),
+                            ', "coolDownDeadline": ', virus.coolDownDeadline.toString(),
+                            '}'
+                        )
+                    )
+                )
+            ));
+        }
     }
 }
