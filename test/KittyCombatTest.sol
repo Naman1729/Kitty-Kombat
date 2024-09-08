@@ -28,14 +28,14 @@ contract KittyCombatTest is Test {
     function setUp() external {
         vm.startPrank(owner);
         link = new LinkToken();
-        vrfCoordinator = new VRFCoordinatorV2_5Mock(100000000000000000, 1000000000, 1);
+        vrfCoordinator = new VRFCoordinatorV2_5Mock(0.0001 ether, 1e7, 45e15);
         
         requestConfirmations = 3;
         keyHash = 0x83250c5584ffa93feb6ee082981c5ebe484c865196750b39835ad4f13780435d;
         subscriptionId = vrfCoordinator.createSubscription();
-        vrfCoordinator.fundSubscription(subscriptionId, 100);
+        vrfCoordinator.fundSubscription(subscriptionId, 10 ether);
         ccipRouter = 0xF694E193200268f9a4868e4Aa017A0118C9a8177;
-        vrfCallbackGaslimit = 100000;
+        vrfCallbackGaslimit = 300_000;
         
         kittyCombat = new KittyCombat(address(vrfCoordinator), vrfCallbackGaslimit, requestConfirmations, subscriptionId, keyHash, ccipRouter, address(link));
         vrfCoordinator.addConsumer(subscriptionId, address(kittyCombat));
@@ -152,16 +152,18 @@ contract KittyCombatTest is Test {
             vm.deal(tempUser, kittyCombat.currentFee());
             
             kittyCombat.mintKittyOrVirus{value: kittyCombat.currentFee()}();
+            vrfCoordinator.fulfillRandomWords(i + 1, address(kittyCombat));
             (, bool isCat) = kittyCombat.tokenIdToIndexInfo(i+1);
             if(isCat) {
                 numberOfCats++;
             } else {
                 numberOfViruses++;
             }
-            console.log("Number of Cats: ", numberOfCats);
-            console.log("Number of Viruses: ", numberOfViruses);
             vm.stopPrank();
         }
+
+        console.log("Number of Cats: ", numberOfCats);
+        console.log("Number of Viruses: ", numberOfViruses);
 
         string memory tempName = string(abi.encodePacked("user", Strings.toString(19)));
         assert(makeAddr(tempName) == kittyCombat.reqIdToUser(20));
