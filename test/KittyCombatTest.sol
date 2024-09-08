@@ -274,4 +274,92 @@ contract KittyCombatTest is Test {
         vm.stopPrank();
     }
 
+    modifier mintKittyOrVirusFor10Participants() {
+        for (uint256 i = 0; i < 10; i++) {
+            string memory _name = string(
+                abi.encodePacked("user", Strings.toString(i))
+            );
+            address tempUser = makeAddr(_name);
+            vm.startPrank(tempUser);
+            vm.deal(tempUser, kittyCombat.currentFee());
+
+            kittyCombat.mintKittyOrVirus{value: kittyCombat.currentFee()}();
+            vrfCoordinator.fulfillRandomWords(i + 1, address(kittyCombat));
+            (, bool isCat) = kittyCombat.tokenIdToIndexInfo(i + 1);
+            vm.stopPrank();
+        }
+        _;
+    }
+    
+    function test_attackIfAttackerIsCat() external mintKittyOrVirusFor10Participants {
+        address attacker = makeAddr(string(abi.encodePacked("user", Strings.toString(1))));
+        vm.startPrank(attacker);
+        vm.expectRevert("Invalid token ids");
+        kittyCombat.attack(1, 2);
+        vm.stopPrank();
+    }
+
+    function test_attackIfAttackerIsNotOwner() external mintKittyOrVirusFor10Participants {
+        vm.expectRevert("Only owner can attack");
+        kittyCombat.attack(8, 2);
+    }
+
+    function test_attackWhenAttackerIsOnCooldown() external mintKittyOrVirusFor10Participants {
+        address attacker = makeAddr(string(abi.encodePacked("user", Strings.toString(7))));
+        uint256 attackerVirusTokenId = 8;
+        uint256 catTokenId = 2;
+        vm.startPrank(owner);
+        kittyCombat.setCooldownDeadline(1 minutes);
+        vm.stopPrank();
+        vm.startPrank(attacker);
+        vm.expectRevert("Virus is on cooldown");
+        kittyCombat.attack(attackerVirusTokenId, catTokenId);
+        vm.stopPrank();
+    }
+
+    function test_attack() external mintKittyOrVirusFor10Participants {
+        address attacker = makeAddr(string(abi.encodePacked("user", Strings.toString(7))));
+        uint256 attackerVirusTokenId = 8;
+        uint256 catTokenId = 2;
+        uint64[] memory _selectedChainSelectors = new uint64[](1);
+        _selectedChainSelectors[0] = 1;
+        address[] memory _destinationAddresses = new address[](1);
+        _destinationAddresses[0] = address(0x1);
+        vm.startPrank(owner);
+        kittyCombat.setCooldownDeadline(1 minutes);
+        kittyCombat.setDestAddr(_selectedChainSelectors, _destinationAddresses);
+        vm.stopPrank();
+        vm.startPrank(attacker);
+        vm.warp(block.timestamp + kittyCombat.cooldownDeadline());
+        kittyCombat.attack(attackerVirusTokenId, catTokenId);
+        vm.stopPrank();
+    }
+    
+    function test_bridgeCatForHealIfCatIsNotInfected() external mintKittyOrVirusFor10Participants {
+        uint256 catTokenId = 1;
+        vm.expectRevert("Cat is not infected");
+        kittyCombat.bridgeCatForHeal(catTokenId);
+    }
+    function test_bridgeCatForHealIfCallerIsNotCatOwner() external mintKittyOrVirusFor10Participants {
+        address attacker = makeAddr(string(abi.encodePacked("user", Strings.toString(7))));
+        uint256 attackerVirusTokenId = 8;
+        uint256 catTokenId = 2;
+        uint64[] memory _selectedChainSelectors = new uint64[](1);
+        _selectedChainSelectors[0] = uint64(block.chainid);
+        address[] memory _destinationAddresses = new address[](1);
+        _destinationAddresses[0] = address(kittyCombat);
+        
+        vm.startPrank(owner);
+        kittyCombat.setCooldownDeadline(1 minutes);
+        kittyCombat.setDestAddr(_selectedChainSelectors, _destinationAddresses);
+        vm.stopPrank();
+        
+        vm.startPrank(attacker);
+        vm.warp(block.timestamp + kittyCombat.cooldownDeadline());
+        kittyCombat.attack(attackerVirusTokenId, catTokenId);
+        vm.stopPrank();
+        
+        vm.expectRevert("Only owner can bridge");
+        kittyCombat.bridgeCatForHeal(catTokenId);
+    }
 }
